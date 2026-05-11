@@ -1,0 +1,19 @@
+[Unit]
+Description=MediaSync Dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=mediasync
+Group=mediasync
+WorkingDirectory=/opt/mediasync
+ExecStart=/opt/mediasync/venv/bin/python /opt/mediasync/app.py
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+StandardOutput=append:/var/log/mediasync.log
+StandardError=append:/var/log/mediasync.log
+
+[Install]
+WantedBy=multi-user.target

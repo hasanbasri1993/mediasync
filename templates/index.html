@@ -1,0 +1,754 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MediaSync</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.6.1/socket.io.min.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/davidshimjs/qrcodejs/qrcode.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0f1117;--card:#1a1d27;--card2:#141720;
+  --accent:#4f8ef7;--green:#22c55e;--red:#ef4444;
+  --yellow:#f59e0b;--purple:#8b5cf6;--cyan:#06b6d4;
+  --text:#e2e8f0;--muted:#64748b;--border:#2d3148
+}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',sans-serif;min-height:100vh}
+
+/* ── Modals backdrop ── */
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.88);display:none;align-items:center;justify-content:center;z-index:1000;backdrop-filter:blur(14px)}
+.modal-bg.show{display:flex}
+.modal-box{background:var(--card);border:1px solid var(--border);border-radius:24px;padding:36px;text-align:center;width:380px;box-shadow:0 30px 80px rgba(0,0,0,.6);animation:popIn .3s cubic-bezier(.175,.885,.32,1.275)}
+@keyframes popIn{from{transform:scale(.85);opacity:0}to{transform:scale(1);opacity:1}}
+
+/* ── PIN UI ── */
+.pin-icon{font-size:52px;margin-bottom:12px}
+.pin-title{font-size:20px;font-weight:800;margin-bottom:4px}
+.pin-sub{color:var(--muted);font-size:13px;line-height:1.6;margin-bottom:8px}
+.pin-sdinfo{background:rgba(79,142,247,.1);border:1px solid rgba(79,142,247,.25);border-radius:10px;padding:10px 14px;margin:10px 0 18px;font-size:13px;color:var(--accent);text-align:left;display:none}
+.pin-sdinfo.show{display:block}
+.pin-sdinfo span{display:block;color:var(--muted);font-size:12px;margin-top:3px}
+.pin-dots{display:flex;gap:14px;justify-content:center;margin-bottom:22px}
+.pin-dot{width:16px;height:16px;border-radius:50%;border:2px solid var(--muted);background:transparent;transition:all .2s}
+.pin-dot.filled{background:var(--accent);border-color:var(--accent);transform:scale(1.2);box-shadow:0 0 8px rgba(79,142,247,.5)}
+.pin-dot.error{background:var(--red);border-color:var(--red)}
+.numpad{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.nmbtn{background:#1e2235;border:1px solid var(--border);color:var(--text);font-size:22px;font-weight:700;padding:15px;border-radius:14px;cursor:pointer;transition:all .12s;user-select:none}
+.nmbtn:hover{background:#252a3d;border-color:var(--accent)}
+.nmbtn:active{transform:scale(.9)}
+.nmbtn.del{font-size:16px;color:var(--muted)}
+.nmbtn.ok{background:var(--accent);border-color:var(--accent);color:#fff}
+.pin-err{color:var(--red);font-size:13px;margin-top:12px;min-height:18px;font-weight:600}
+.pin-cancel{margin-top:12px;font-size:12px;color:var(--muted);cursor:pointer;text-decoration:underline}
+.pin-cancel:hover{color:var(--red)}
+
+/* ── QR Modal ── */
+#qr-modal .modal-box{width:400px}
+.qr-folder{font-family:monospace;font-size:12px;color:var(--muted);margin:8px 0 16px;word-break:break-all}
+#qr-container{background:#fff;border-radius:12px;padding:16px;display:inline-block;margin:0 auto 16px}
+#qr-container canvas{display:none!important}
+  #qr-container img{display:block!important;margin:0 auto}
+.qr-url{font-size:11px;color:var(--muted);word-break:break-all;margin-bottom:16px;padding:8px;background:var(--card2);border-radius:8px;text-align:left;line-height:1.5}
+.qr-url a{color:var(--accent);text-decoration:none}
+.qr-url a:hover{text-decoration:underline}
+.btn-close{background:var(--accent);color:#fff;border:none;padding:10px 28px;border-radius:10px;cursor:pointer;font-size:14px;font-weight:700;transition:all .2s}
+.btn-close:hover{background:#3d7ef0}
+.qr-loading{color:var(--muted);font-size:14px;padding:30px}
+
+/* ── Toast ── */
+#toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(80px);background:#1e2235;border:1px solid var(--border);border-radius:14px;padding:14px 22px;font-size:14px;z-index:999;transition:transform .3s,opacity .3s;opacity:0;display:flex;align-items:center;gap:10px;box-shadow:0 8px 30px rgba(0,0,0,.4);max-width:90vw;pointer-events:none}
+#toast.show{transform:translateX(-50%) translateY(0);opacity:1}
+#toast.success{border-color:var(--green);color:var(--green)}
+#toast.info{border-color:var(--accent);color:var(--accent)}
+#toast.warning{border-color:var(--yellow);color:var(--yellow)}
+#toast.error{border-color:var(--red);color:var(--red)}
+
+/* ── Phase banner ── */
+#phase-banner{padding:11px 24px;display:none;align-items:center;gap:12px;font-size:14px;font-weight:600;border-bottom:1px solid var(--border)}
+#phase-banner.show{display:flex}
+#phase-banner.cutting{background:rgba(139,92,246,.08);color:var(--purple)}
+#phase-banner.ejecting{background:rgba(245,158,11,.08);color:var(--yellow)}
+#phase-banner.syncing{background:rgba(79,142,247,.08);color:var(--accent)}
+.spinner{width:16px;height:16px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ── Topbar ── */
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:18px 24px;border-bottom:1px solid var(--border);flex-wrap:wrap;gap:10px}
+.topbar h1{font-size:22px;font-weight:800}
+.topbar h1 span{color:var(--accent)}
+.sdpill{display:inline-flex;align-items:center;gap:8px;padding:5px 13px;border-radius:20px;font-size:13px;font-weight:600;transition:all .3s}
+.sdpill.on{background:rgba(34,197,94,.1);color:var(--green);border:1px solid rgba(34,197,94,.3)}
+.sdpill.off{background:rgba(100,116,139,.08);color:var(--muted);border:1px solid var(--border)}
+.dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.dot-g{background:var(--green);animation:pulse 1.5s infinite}
+.dot-x{background:var(--muted)}
+@keyframes pulse{50%{opacity:.3;transform:scale(.8)}}
+.tbtn{padding:8px 16px;border-radius:10px;cursor:pointer;font-size:13px;font-weight:600;border:1px solid;transition:all .2s;background:transparent}
+.tbtn-y{color:var(--yellow);border-color:var(--yellow)}
+.tbtn-y:hover{background:rgba(245,158,11,.1)}
+.tbtn-m{color:var(--muted);border-color:var(--border)}
+.tbtn-m:hover{color:var(--accent);border-color:var(--accent)}
+
+/* ── Content ── */
+.wrap{padding:22px;max-width:1280px;margin:0 auto}
+.grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:15px;margin-bottom:20px}
+@media(max-width:900px){.grid4{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:480px){.grid4{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:20px}
+.clabel{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:10px}
+.cbig{font-size:28px;font-weight:800;line-height:1}
+.csub{font-size:13px;color:var(--muted);margin-top:6px}
+.badge{display:inline-flex;align-items:center;gap:5px;padding:4px 11px;border-radius:20px;font-size:12px;font-weight:700}
+.b-idle{background:rgba(100,116,139,.12);color:var(--muted)}
+.b-pin{background:rgba(245,158,11,.12);color:var(--yellow)}
+.b-cut{background:rgba(139,92,246,.12);color:var(--purple)}
+.b-eje{background:rgba(245,158,11,.12);color:var(--yellow)}
+.b-syn{background:rgba(79,142,247,.12);color:var(--accent)}
+.b-ok{background:rgba(34,197,94,.12);color:var(--green)}
+.b-err{background:rgba(239,68,68,.12);color:var(--red)}
+
+/* Progress bar */
+.pbar-bg{background:#0d0f18;border-radius:10px;height:13px;overflow:hidden;border:1px solid var(--border);margin:10px 0 5px;position:relative}
+.pbar-fill{height:100%;border-radius:10px;transition:width .4s ease}
+.pbar-fill.cut{background:linear-gradient(90deg,var(--purple),#a855f7)}
+.pbar-fill.sync{background:linear-gradient(90deg,var(--accent),var(--cyan))}
+.pbar-fill.done{background:linear-gradient(90deg,var(--green),#4ade80)}
+.pbar-shimmer::after{content:'';position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.12),transparent);animation:shimmer 1.5s infinite}
+@keyframes shimmer{from{transform:translateX(-100%)}to{transform:translateX(200%)}};
+.pmeta{display:flex;justify-content:space-between;font-size:11px;color:var(--muted)}
+
+/* Cut progress detail */
+.cut-detail{font-size:12px;color:var(--purple);margin-top:6px;font-family:monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* Two col */
+.two{display:grid;grid-template-columns:1fr 1fr;gap:15px}
+@media(max-width:768px){.two{grid-template-columns:1fr}}
+.logbox{background:#080a10;border:1px solid var(--border);border-radius:10px;padding:13px;font-family:monospace;font-size:12px;height:300px;overflow-y:auto;color:#5a7a9e;line-height:1.7}
+.ll-ok{color:var(--green)}.ll-err{color:var(--red)}.ll-inf{color:var(--accent)}.ll-wrn{color:var(--yellow)}
+
+/* Folder table */
+.ftable{width:100%;border-collapse:collapse;font-size:13px}
+.ftable th{color:var(--muted);text-align:left;padding:8px 10px;font-size:11px;font-weight:700;text-transform:uppercase;border-bottom:1px solid var(--border)}
+.ftable td{padding:10px;border-bottom:1px solid #1a1d2720;vertical-align:middle}
+.ftable tr:hover td{background:rgba(255,255,255,.015)}
+.sbtn{background:var(--accent);color:#fff;border:none;padding:5px 12px;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;transition:all .15s}
+.sbtn:hover{background:#3d7ef0}
+/* Status badges folder */
+.st-pending{background:rgba(100,116,139,.1);color:var(--muted);border:1px solid var(--border);padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700}
+.st-syncing{background:rgba(79,142,247,.12);color:var(--accent);border:1px solid rgba(79,142,247,.3);padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;display:inline-flex;align-items:center;gap:5px}
+.st-syncing-spin{width:10px;height:10px;border:2px solid var(--accent);border-top-color:transparent;border-radius:50%;animation:spin .7s linear infinite}
+.st-synced{background:rgba(34,197,94,.1);color:var(--green);border:1px solid rgba(34,197,94,.25);padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;cursor:pointer;transition:all .2s;display:inline-flex;align-items:center;gap:5px}
+.st-synced:hover{background:rgba(34,197,94,.2);transform:scale(1.02)}
+</style>
+</head>
+<body>
+
+<!-- Sounds -->
+<audio id="snd-insert"  src="/static/sounds/insert.wav"  preload="auto"></audio>
+<audio id="snd-success" src="/static/sounds/success.wav" preload="auto"></audio>
+<audio id="snd-eject"   src="/static/sounds/success.wav" preload="auto"></audio>
+
+<!-- ══ PIN Modal SD Card ══ -->
+<div class="modal-bg" id="pin-modal">
+  <div class="modal-box">
+    <div class="pin-icon" id="pin-icon">💾</div>
+    <div class="pin-title" id="pin-title">SD Card Terdeteksi!</div>
+    <div class="pin-sub"   id="pin-sub">Masukkan PIN untuk memulai import</div>
+    <div class="pin-sdinfo show" id="pin-sdinfo">
+      <strong id="pin-fc">0 file</strong> media ditemukan
+      <span id="pin-dev"></span>
+    </div>
+    <div class="pin-dots">
+      <div class="pin-dot" id="pa0"></div><div class="pin-dot" id="pa1"></div>
+      <div class="pin-dot" id="pa2"></div><div class="pin-dot" id="pa3"></div>
+    </div>
+    <div class="numpad">
+      <button class="nmbtn" onclick="addPin('import','1')">1</button>
+      <button class="nmbtn" onclick="addPin('import','2')">2</button>
+      <button class="nmbtn" onclick="addPin('import','3')">3</button>
+      <button class="nmbtn" onclick="addPin('import','4')">4</button>
+      <button class="nmbtn" onclick="addPin('import','5')">5</button>
+      <button class="nmbtn" onclick="addPin('import','6')">6</button>
+      <button class="nmbtn" onclick="addPin('import','7')">7</button>
+      <button class="nmbtn" onclick="addPin('import','8')">8</button>
+      <button class="nmbtn" onclick="addPin('import','9')">9</button>
+      <button class="nmbtn del" onclick="delPin('import')">⌫</button>
+      <button class="nmbtn" onclick="addPin('import','0')">0</button>
+      <button class="nmbtn ok" onclick="submitPin('import')">✓</button>
+    </div>
+    <div class="pin-err" id="pin-err-import"></div>
+    <div class="pin-cancel" onclick="cancelPin()">Batal</div>
+  </div>
+</div>
+
+<!-- ══ PIN Modal QR ══ -->
+<div class="modal-bg" id="qr-pin-modal">
+  <div class="modal-box">
+    <div class="pin-icon">🔐</div>
+    <div class="pin-title">Verifikasi PIN</div>
+    <div class="pin-sub">Masukkan PIN untuk melihat link Google Drive</div>
+    <div class="pin-dots">
+      <div class="pin-dot" id="pb0"></div><div class="pin-dot" id="pb1"></div>
+      <div class="pin-dot" id="pb2"></div><div class="pin-dot" id="pb3"></div>
+    </div>
+    <div class="numpad">
+      <button class="nmbtn" onclick="addPin('qr','1')">1</button>
+      <button class="nmbtn" onclick="addPin('qr','2')">2</button>
+      <button class="nmbtn" onclick="addPin('qr','3')">3</button>
+      <button class="nmbtn" onclick="addPin('qr','4')">4</button>
+      <button class="nmbtn" onclick="addPin('qr','5')">5</button>
+      <button class="nmbtn" onclick="addPin('qr','6')">6</button>
+      <button class="nmbtn" onclick="addPin('qr','7')">7</button>
+      <button class="nmbtn" onclick="addPin('qr','8')">8</button>
+      <button class="nmbtn" onclick="addPin('qr','9')">9</button>
+      <button class="nmbtn del" onclick="delPin('qr')">⌫</button>
+      <button class="nmbtn" onclick="addPin('qr','0')">0</button>
+      <button class="nmbtn ok" onclick="submitPin('qr')">✓</button>
+    </div>
+    <div class="pin-err" id="pin-err-qr"></div>
+    <div class="pin-cancel" onclick="closeQrPin()">Batal</div>
+  </div>
+</div>
+
+<!-- ══ QR Code Modal ══ -->
+<div class="modal-bg" id="qr-modal">
+  <div class="modal-box">
+    <div style="font-size:32px;margin-bottom:8px">📲</div>
+    <div class="pin-title">Link Google Drive</div>
+    <div class="qr-folder" id="qr-folder-name"></div>
+
+    <div id="qr-loading" class="qr-loading">⏳ Mengambil link dari Google Drive...</div>
+
+    <div id="qr-content" style="display:none">
+      <div id="qr-container"></div>
+      <div class="qr-url">
+        <a id="qr-link" href="#" target="_blank">—</a>
+      </div>
+    </div>
+
+    <div id="qr-error" style="display:none;color:var(--red);font-size:13px;padding:20px"></div>
+
+    <button class="btn-close" onclick="closeQrModal()">✕ Tutup</button>
+  </div>
+</div>
+
+<!-- ══ Toast ══ -->
+<div id="toast"><span id="ti"></span><span id="tm"></span></div>
+
+<!-- ══ Phase Banner ══ -->
+<div id="phase-banner">
+  <div class="spinner"></div>
+  <span id="phase-txt">Memproses...</span>
+</div>
+
+<!-- ══ Topbar ══ -->
+<div class="topbar">
+  <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+    <h1>Media<span>Sync</span></h1>
+    <div class="sdpill off" id="sdpill">
+      <div class="dot dot-x" id="sddot"></div>
+      <span id="sdtxt">Tidak ada SD Card</span>
+    </div>
+  </div>
+  <div style="display:flex;gap:8px">
+    <button class="tbtn tbtn-y" onclick="ejectSD()">⏏ Eject</button>
+    <button class="tbtn tbtn-m" onclick="loadStatus()">↺ Refresh</button>
+  </div>
+</div>
+
+<!-- ══ Content ══ -->
+<div class="wrap">
+
+  <!-- Stats grid -->
+  <div class="grid4">
+
+    <!-- Card 1: Status + Cut Progress -->
+    <div class="card">
+      <div class="clabel">Status</div>
+      <div id="stat-badge"><span class="badge b-idle">⏸ Idle</span></div>
+      <div class="csub" id="stat-folder" style="margin-top:8px">Menunggu SD Card...</div>
+      <!-- Cut progress (muncul saat phase=cutting) -->
+      <div id="cut-progress-wrap" style="display:none;margin-top:12px">
+        <div class="pbar-bg">
+          <div class="pbar-fill cut pbar-shimmer" id="cut-pbar" style="width:0%"></div>
+        </div>
+        <div class="pmeta">
+          <span id="cut-done-count">0</span>
+          <span id="cut-total-count">0 file</span>
+        </div>
+        <div class="cut-detail" id="cut-current-file">Mempersiapkan...</div>
+      </div>
+    </div>
+
+    <!-- Card 2: Progress Upload -->
+    <div class="card">
+      <div class="clabel">Progress Upload</div>
+      <div style="display:flex;align-items:baseline;gap:8px">
+        <div class="cbig" id="stat-pct">0%</div>
+        <div style="font-size:12px;color:var(--muted)" id="stat-eta"></div>
+      </div>
+      <div class="pbar-bg" style="margin-top:10px">
+        <div class="pbar-fill sync pbar-shimmer" id="sync-pbar" style="width:0%"></div>
+      </div>
+      <div class="pmeta" style="margin-top:4px">
+        <span id="stat-xfer">—</span>
+        <span id="stat-tot">—</span>
+      </div>
+    </div>
+
+    <!-- Card 3: Kecepatan -->
+    <div class="card">
+      <div class="clabel">Kecepatan Upload</div>
+      <div class="cbig" id="stat-spd" style="font-size:20px">—</div>
+      <div class="csub">Transfer ke Google Drive</div>
+    </div>
+
+    <!-- Card 4: Sync terakhir -->
+    <div class="card">
+      <div class="clabel">Sync Terakhir</div>
+      <div class="cbig" id="stat-last" style="font-size:15px;line-height:1.5">—</div>
+    </div>
+  </div>
+
+  <!-- Log + Table -->
+  <div class="two">
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <span style="font-weight:700">📋 Live Log</span>
+        <button onclick="clearLog()" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:12px">🗑 Hapus</button>
+      </div>
+      <div class="logbox" id="logbox"></div>
+    </div>
+    <div class="card">
+      <div style="font-weight:700;margin-bottom:12px">📁 Folder Terbaru</div>
+      <div style="overflow:auto;max-height:340px">
+        <table class="ftable">
+          <thead><tr>
+            <th>Folder</th><th>File</th><th>Size</th><th>Status</th>
+          </tr></thead>
+          <tbody id="ftbody">
+            <tr><td colspan="4" style="text-align:center;color:var(--muted);padding:24px">Memuat...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /wrap -->
+
+<script>
+const socket = io();
+
+// ══ State PIN ══════════════════════════════════════════════
+const pinState = {
+  import: { val: "", prefix: "pa" },
+  qr:     { val: "", prefix: "pb" }
+};
+let qrTargetFolder = "";
+let currentQrCode  = null;
+
+// ══ Sound ══════════════════════════════════════════════════
+function play(n){
+  const e=document.getElementById("snd-"+n);
+  if(e){e.currentTime=0;e.play().catch(()=>{});}
+}
+
+// ══ Toast ══════════════════════════════════════════════════
+let toastT;
+function toast(msg,type="info",icon="ℹ️",ms=4000){
+  const el=document.getElementById("toast");
+  document.getElementById("tm").textContent=msg;
+  document.getElementById("ti").textContent=icon;
+  el.className="show "+type;
+  clearTimeout(toastT);
+  toastT=setTimeout(()=>el.className="",ms);
+}
+
+// ══ Phase Banner ═══════════════════════════════════════════
+function showBanner(text,cls=""){
+  const b=document.getElementById("phase-banner");
+  document.getElementById("phase-txt").textContent=text;
+  b.className=text?"show "+cls:"";
+}
+
+// ══ PIN ════════════════════════════════════════════════════
+function addPin(ctx,n){
+  const s=pinState[ctx];
+  if(s.val.length>=4)return;
+  s.val+=n; updateDots(ctx);
+  if(s.val.length===4)setTimeout(()=>submitPin(ctx),180);
+}
+function delPin(ctx){
+  pinState[ctx].val=pinState[ctx].val.slice(0,-1);
+  updateDots(ctx);
+  document.getElementById(`pin-err-${ctx}`).textContent="";
+}
+function updateDots(ctx){
+  const {val,prefix}=pinState[ctx];
+  for(let i=0;i<4;i++){
+    const d=document.getElementById(prefix+i);
+    d.classList.toggle("filled",i<val.length);
+    d.classList.remove("error");
+  }
+}
+function pinErr(ctx,msg){
+  document.getElementById(`pin-err-${ctx}`).textContent=msg;
+}
+
+async function submitPin(ctx){
+  const s=pinState[ctx];
+  if(s.val.length<4)return;
+  const purpose = ctx==="import"?"import":"view_qr";
+  const res=await fetch("/api/verify-pin",{
+    method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({pin:s.val,purpose})
+  });
+  const d=await res.json();
+  if(d.success){
+    s.val=""; updateDots(ctx);
+    if(ctx==="import"){
+      document.getElementById("pin-modal").classList.remove("show");
+      startImport();
+    } else {
+      document.getElementById("qr-pin-modal").classList.remove("show");
+      fetchQrCode(qrTargetFolder);
+    }
+  } else {
+    s.val="";
+    pinErr(ctx,"❌ PIN salah, coba lagi!");
+    const {prefix}=s;
+    for(let i=0;i<4;i++){
+      const d=document.getElementById(prefix+i);
+      d.classList.remove("filled"); d.classList.add("error");
+    }
+    setTimeout(()=>{ updateDots(ctx); pinErr(ctx,""); },1200);
+  }
+}
+
+function cancelPin(){
+  document.getElementById("pin-modal").classList.remove("show");
+  pinState.import.val=""; updateDots("import");
+  toast("Import dibatalkan","warning","⚠️");
+}
+function closeQrPin(){
+  document.getElementById("qr-pin-modal").classList.remove("show");
+  pinState.qr.val=""; updateDots("qr");
+}
+
+document.addEventListener("keydown",e=>{
+  // Deteksi modal mana yang aktif
+  const importOpen=document.getElementById("pin-modal").classList.contains("show");
+  const qrPinOpen =document.getElementById("qr-pin-modal").classList.contains("show");
+  const ctx=importOpen?"import":qrPinOpen?"qr":null;
+  if(!ctx)return;
+  if(e.key>="0"&&e.key<="9") addPin(ctx,e.key);
+  if(e.key==="Backspace") delPin(ctx);
+  if(e.key==="Enter") submitPin(ctx);
+  if(e.key==="Escape"){
+    if(ctx==="import") cancelPin();
+    else closeQrPin();
+  }
+});
+
+// ══ Import ═════════════════════════════════════════════════
+async function startImport(){
+  showBanner("✂️  Memindahkan file dari SD Card...","cutting");
+  const res=await fetch("/api/start-import",{method:"POST"});
+  const d=await res.json();
+  if(!d.success){
+    toast(d.error||"Gagal memulai import","error","❌");
+    showBanner("");
+  }
+}
+
+// ══ QR Code ════════════════════════════════════════════════
+function openQrFlow(folder){
+  qrTargetFolder=folder;
+  // Reset QR modal content
+  document.getElementById("qr-loading").style.display="block";
+  document.getElementById("qr-content").style.display="none";
+  document.getElementById("qr-error").style.display="none";
+  document.getElementById("qr-folder-name").textContent=folder;
+  document.getElementById("qr-container").innerHTML="";
+  if(currentQrCode){currentQrCode=null;}
+
+  // Tampilkan PIN QR dulu
+  pinState.qr.val=""; updateDots("qr"); pinErr("qr","");
+  document.getElementById("qr-pin-modal").classList.add("show");
+}
+
+async function fetchQrCode(folder){
+  document.getElementById("qr-modal").classList.add("show");
+  document.getElementById("qr-loading").style.display="block";
+  document.getElementById("qr-content").style.display="none";
+  document.getElementById("qr-error").style.display="none";
+
+  try{
+    const res=await fetch(`/api/gdrive-url/${encodeURIComponent(folder)}`);
+    const d=await res.json();
+    if(d.success && d.url){
+      document.getElementById("qr-loading").style.display="none";
+      document.getElementById("qr-content").style.display="block";
+      // Set link
+      const a=document.getElementById("qr-link");
+      a.href=d.url; a.textContent=d.url;
+      // Generate QR
+      document.getElementById("qr-container").innerHTML="";
+      currentQrCode=new QRCode(document.getElementById("qr-container"),{
+        text: d.url,
+        width: 280, height: 280,
+        colorDark:"#000000", colorLight:"#ffffff",
+        correctLevel: QRCode.CorrectLevel.L
+      });
+    } else {
+      document.getElementById("qr-loading").style.display="none";
+      document.getElementById("qr-error").style.display="block";
+      document.getElementById("qr-error").textContent=
+        d.error||"URL tidak tersedia. Pastikan folder sudah tersync ke Google Drive.";
+    }
+  } catch(e){
+    document.getElementById("qr-loading").style.display="none";
+    document.getElementById("qr-error").style.display="block";
+    document.getElementById("qr-error").textContent="Gagal mengambil URL: "+e.message;
+  }
+}
+
+function closeQrModal(){
+  document.getElementById("qr-modal").classList.remove("show");
+  document.getElementById("qr-container").innerHTML="";
+  currentQrCode=null;
+}
+
+// ══ Status ═════════════════════════════════════════════════
+async function loadStatus(){
+  const res=await fetch("/api/status");
+  if(!res.ok)return;
+  const d=await res.json();
+  applyState(d);
+  renderFolders(d.recent_folders||[]);
+}
+
+function applyState(d){
+  const bmap={
+    idle:        '<span class="badge b-idle">⏸ Idle</span>',
+    waiting_pin: '<span class="badge b-pin">🔐 Menunggu PIN</span>',
+    cutting:     '<span class="badge b-cut">✂️ Memindahkan File</span>',
+    ejecting:    '<span class="badge b-eje">⏏ Eject SD Card</span>',
+    syncing:     '<span class="badge b-syn">☁ Upload GDrive</span>',
+    done:        '<span class="badge b-ok">✅ Selesai</span>',
+    error:       '<span class="badge b-err">❌ Error</span>'
+  };
+  document.getElementById("stat-badge").innerHTML=bmap[d.phase]||bmap.idle;
+  document.getElementById("stat-folder").textContent=d.folder||"Menunggu SD Card...";
+
+  // Cut progress card
+  const cutWrap=document.getElementById("cut-progress-wrap");
+  if(d.phase==="cutting"){
+    cutWrap.style.display="block";
+    const pct=d.cut_total>0?Math.round(d.cut_done*100/d.cut_total):0;
+    document.getElementById("cut-pbar").style.width=pct+"%";
+    document.getElementById("cut-done-count").textContent=d.cut_done+" file";
+    document.getElementById("cut-total-count").textContent="dari "+d.cut_total;
+  } else {
+    cutWrap.style.display="none";
+  }
+
+  // Upload progress
+  const pct=d.percent||0;
+  document.getElementById("stat-pct").textContent=pct+"%";
+
+  const pbarEl=document.getElementById("sync-pbar");
+  pbarEl.style.width=pct+"%";
+  if(d.phase==="done"&&pct>=100){
+    pbarEl.className="pbar-fill done"; 
+    pbarEl.parentElement.querySelector('.pbar-shimmer') &&
+      pbarEl.classList.remove("pbar-shimmer");
+  } else {
+    pbarEl.className="pbar-fill sync"+(d.phase==="syncing"?" pbar-shimmer":"");
+  }
+
+  document.getElementById("stat-eta").textContent=
+    d.eta&&d.eta!="--"?"ETA "+d.eta:"";
+  document.getElementById("stat-xfer").textContent=d.transferred||"—";
+  document.getElementById("stat-tot").textContent=d.total_size||"—";
+
+  // Speed
+  const sp=document.getElementById("stat-spd");
+  if(d.phase==="syncing"&&d.speed){
+    sp.textContent=d.speed; sp.style.color="var(--green)";
+  } else if(d.phase==="syncing"&&!d.speed){
+    sp.textContent="Menghubungkan..."; sp.style.color="var(--yellow)";
+  } else {
+    sp.textContent="—"; sp.style.color="var(--muted)";
+  }
+
+  document.getElementById("stat-last").textContent=d.last_sync||"—";
+  updateSD(d.sdcard_connected,d.folder);
+}
+
+function updateSD(on,folder){
+  const p=document.getElementById("sdpill"),
+        d=document.getElementById("sddot"),
+        t=document.getElementById("sdtxt");
+  if(on){p.className="sdpill on";d.className="dot dot-g";t.textContent=folder||"SD Card terhubung";}
+  else{p.className="sdpill off";d.className="dot dot-x";t.textContent="Tidak ada SD Card";}
+}
+
+// ══ Folder Table ═══════════════════════════════════════════
+function renderFolders(folders){
+  const tb=document.getElementById("ftbody");
+  if(!folders.length){
+    tb.innerHTML='<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:24px">Belum ada data</td></tr>';
+    return;
+  }
+  tb.innerHTML=folders.map(f=>{
+    let statusHtml="";
+    if(f.status==="syncing"){
+      statusHtml=`<span class="st-syncing"><span class="st-syncing-spin"></span>Uploading...</span>`;
+    } else if(f.status==="synced"){
+      statusHtml=`<span class="st-synced" onclick="openQrFlow('${f.folder}')" title="Klik untuk lihat link GDrive">✅ Tersync 📲</span>`;
+    } else {
+      statusHtml=`<button class="sbtn" onclick="syncOnly('${f.folder}')">▶ Sync</button>`;
+    }
+    return `<tr>
+      <td style="font-size:11px;font-family:monospace;color:#6a8aae">${f.folder}</td>
+      <td>${f.count}</td>
+      <td>${f.size_mb} MB</td>
+      <td>${statusHtml}</td>
+    </tr>`;
+  }).join("");
+}
+
+async function syncOnly(folder){
+  await fetch("/api/sync",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({folder})});
+  toast("Sync dimulai: "+folder,"info","🔄");
+}
+
+// ══ Log ════════════════════════════════════════════════════
+function addLog(cls,text){
+  const b=document.getElementById("logbox"),e=document.createElement("div");
+  e.className=cls?"ll-"+cls:""; e.textContent=text;
+  b.appendChild(e); b.scrollTop=b.scrollHeight;
+  while(b.children.length>400)b.removeChild(b.firstChild);
+}
+function clearLog(){ document.getElementById("logbox").innerHTML=""; }
+
+// ══ Eject ══════════════════════════════════════════════════
+async function ejectSD(){
+  if(!confirm("Eject SD Card sekarang?"))return;
+  const r=await fetch("/api/eject",{method:"POST"});
+  const d=await r.json();
+  toast(d.success?d.message:d.error,d.success?"success":"error",d.success?"✅":"❌");
+}
+
+// ══ Socket Events ══════════════════════════════════════════
+socket.on("state_update", applyState);
+
+socket.on("sdcard_detected", d=>{
+  play("insert");
+  document.getElementById("pin-fc").textContent=d.file_count+" file";
+  document.getElementById("pin-dev").textContent=d.device?"Device: "+d.device:"";
+  pinState.import.val=""; updateDots("import"); pinErr("import","");
+  document.getElementById("pin-modal").classList.add("show");
+  toast(`💾 SD Card: ${d.file_count} file ditemukan`,"info","💾",5000);
+});
+
+// Realtime cut progress
+socket.on("cut_progress", d=>{
+  document.getElementById("cut-progress-wrap").style.display="block";
+  document.getElementById("cut-pbar").style.width=d.percent+"%";
+  document.getElementById("cut-done-count").textContent=d.done+" file";
+  document.getElementById("cut-total-count").textContent="dari "+d.total;
+  document.getElementById("cut-current-file").textContent="↳ "+d.current;
+});
+
+socket.on("phase_change", d=>{
+  const map={
+    cutting:  "✂️  Memindahkan file dari SD Card...",
+    ejecting: "⏏  Eject SD Card...",
+    syncing:  "☁️  Mengupload ke Google Drive...",
+  };
+  const cls={cutting:"cutting",ejecting:"ejecting",syncing:"syncing"};
+  showBanner(map[d.phase]||"",cls[d.phase]||"");
+  loadStatus();
+});
+
+socket.on("sync_update", d=>{
+  const pct=d.percent||0;
+  document.getElementById("stat-pct").textContent=pct+"%";
+  document.getElementById("sync-pbar").style.width=pct+"%";
+  document.getElementById("stat-eta").textContent=d.eta&&d.eta!="--"?"ETA "+d.eta:"";
+  document.getElementById("stat-xfer").textContent=d.transferred||"—";
+  document.getElementById("stat-tot").textContent=d.total_size||"—";
+  if(d.speed){
+    const sp=document.getElementById("stat-spd");
+    sp.textContent=d.speed; sp.style.color="var(--green)";
+  }
+});
+
+socket.on("cut_done", d=>{
+  toast(`✅ ${d.count} file dipindahkan — SD Card dieject otomatis`,"success","✂️",5000);
+  addLog("ok",`✅ ${d.count} file berhasil dipindahkan ke ${d.folder}`);
+  document.getElementById("cut-progress-wrap").style.display="none";
+});
+
+socket.on("sdcard_status", d=>{
+  updateSD(d.connected,"");
+  if(!d.connected) toast("SD Card aman dilepas","success","⏏",3000);
+});
+
+socket.on("all_done", d=>{
+  play("success"); showBanner("");
+  // Update pbar ke 100% + done color
+  document.getElementById("stat-pct").textContent="100%";
+  document.getElementById("sync-pbar").style.width="100%";
+  document.getElementById("sync-pbar").className="pbar-fill done";
+  document.getElementById("stat-eta").textContent="Selesai";
+  toast(`🎉 Upload selesai: ${d.folder}`,"success","🎉",7000);
+  addLog("ok",`🎉 Selesai: ${d.folder} — ${d.time}`);
+  loadStatus();
+});
+
+socket.on("import_error", d=>{
+  toast(d.message,"error","❌",7000);
+  addLog("err","❌ "+d.message);
+  showBanner("");
+});
+
+socket.on("log_line", d=>{
+  if(!d.text)return;
+  const t=d.text.toLowerCase();
+  const c=t.includes("error")||t.includes("gagal")?"err":
+          t.includes("✅")||t.includes("selesai")?"ok":
+          t.includes("☁")||t.includes("transferred")?"inf":
+          t.includes("⚠")?"wrn":"";
+  addLog(c,d.text);
+});
+
+socket.on("play_sound", d=>play(d.sound));
+
+socket.on("folder_list", d=>renderFolders(d.folders||[]));
+
+socket.on("connect", loadStatus);
+
+socket.on("state_reset", () => {
+  document.getElementById("stat-pct").textContent = "0%";
+  document.getElementById("sync-pbar").style.width = "0%";
+  document.getElementById("sync-pbar").className = "pbar-fill sync";
+  document.getElementById("stat-xfer").textContent = "—";
+  document.getElementById("stat-tot").textContent = "—";
+  document.getElementById("stat-eta").textContent = "";
+  document.getElementById("stat-spd").textContent = "—";
+  document.getElementById("stat-spd").style.color = "var(--muted)";
+  document.getElementById("cut-progress-wrap").style.display = "none";
+  document.getElementById("stat-badge").innerHTML = '<span class="badge b-idle">⏸ Idle</span>';
+  document.getElementById("stat-folder").textContent = "Menunggu SD Card...";
+  showBanner("");
+});
+
+setInterval(loadStatus, 15000);
+</script>
+</body>
+</html>
