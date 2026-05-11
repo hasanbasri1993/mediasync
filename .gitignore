@@ -18,6 +18,7 @@ env/
 /media/
 .synced_folders
 .gdrive_urls
+settings.json
 
 # Sounds (akan di-generate saat install)
 static/sounds/

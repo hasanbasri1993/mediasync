@@ -9,12 +9,15 @@
 
 - 💾 **Auto detect SD Card** via udev rule
 - 🔐 **PIN Protection** — muncul saat SD Card dicolok, bukan saat buka dashboard
-- ✂️ **Auto Cut** — foto & video dipindahkan dari SD Card ke local disk
-- ⏏ **Auto Eject** — SD Card otomatis di-eject setelah cut selesai
+- ✂️ **Cut / Copy mode** — pilih mode transfer di Pengaturan (cut = pindahkan, copy = salin & file asli tetap di SD Card)
+- ⏏ **Auto Eject** — SD Card otomatis di-eject setelah transfer selesai
 - ☁️ **Auto Sync** — upload ke Google Drive via rclone
 - 📊 **Realtime Progress** — cut progress + upload speed + ETA
 - 📲 **QR Code** — scan QR untuk buka folder Google Drive langsung di HP
 - 🔊 **Notif Suara** — bunyi saat SD Card masuk dan selesai upload
+- ⚙️ **Halaman Pengaturan (PIN-gated)** — ganti PIN, pilih mode cut/copy, konfigurasi notifikasi
+- 📩 **Notifikasi Telegram** — kirim pesan otomatis saat upload Google Drive selesai (lengkap dengan link folder)
+- 📡 **Webhook HTTP Custom** — POST/GET/PUT/PATCH ke URL apapun dengan header & body JSON kustom (mendukung placeholder `{folder}`, `{file_count}`, `{gdrive_url}`, `{time}`, `{event}`)
 
 ---
 
@@ -106,6 +109,43 @@ sudo bash simulate-sdcard.sh
 # Eject manual
 sudo umount /mnt/sdcard_tmp
 ```
+
+---
+
+## ⚙️ Pengaturan (Settings)
+
+Klik tombol **⚙ Pengaturan** di topbar — masukkan PIN — buka 4 tab:
+
+### 1. Umum
+- **Mode Transfer**: `CUT` (default, file dipindahkan dari SD Card) atau `COPY` (file disalin, file asli tetap di SD Card)
+
+### 2. PIN
+- Ganti PIN 4 digit (perlu PIN lama untuk verifikasi)
+- PIN disimpan di `settings.json` (tidak ikut di-commit ke git)
+
+### 3. Telegram
+- Aktifkan/non-aktifkan notifikasi
+- Isi **Bot Token** dari [@BotFather](https://t.me/BotFather)
+- Isi **Chat ID** (gunakan [@userinfobot](https://t.me/userinfobot) atau [@getidsbot](https://t.me/getidsbot))
+- Tombol **Test** untuk uji kirim langsung
+
+### 4. Webhook HTTP
+Kirim notifikasi ke URL kustom saat upload selesai:
+- **URL**, **Method** (POST/GET/PUT/PATCH)
+- **Headers (JSON)**: misal `{"Authorization":"Bearer xyz"}`
+- **Body (JSON)**: bebas, contoh:
+  ```json
+  {
+    "folder":"{folder}",
+    "files":{file_count},
+    "link":"{gdrive_url}",
+    "time":"{time}"
+  }
+  ```
+- Placeholder didukung: `{folder}`, `{file_count}`, `{gdrive_url}`, `{time}`, `{event}`
+- Jika body kosong, otomatis kirim payload default berisi semua field di atas
+
+Semua pengaturan tersimpan di `settings.json` di folder project (di-gitignore otomatis).
 
 ---
 

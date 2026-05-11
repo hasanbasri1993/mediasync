@@ -1,11 +1,69 @@
 from flask import Flask, render_template, request, jsonify, session
 from flask_socketio import SocketIO, emit
-import subprocess, threading, os, time, re
+import subprocess, threading, os, time, re, json, shutil
+from urllib import request as urlrequest, error as urlerror
 import config
+
+# ── Settings persistence ──────────────────────────────────────
+SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
+
+DEFAULT_SETTINGS = {
+    "pin": config.PIN_CODE,
+    "transfer_mode": "cut",          # "cut" | "copy"
+    "telegram": {
+        "enabled":  False,
+        "bot_token": "",
+        "chat_id":   ""
+    },
+    "webhook": {
+        "enabled": False,
+        "url":     "",
+        "method":  "POST",           # POST | GET | PUT
+        "headers": {},               # dict: {"Authorization": "Bearer ..."}
+        "body":    {}                # dict; nilai dapat berisi placeholder
+    }
+}
+
+def _deep_merge(base, override):
+    """Merge dict secara rekursif (override menang)."""
+    out = dict(base)
+    for k, v in (override or {}).items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+def load_settings():
+    if not os.path.exists(SETTINGS_FILE):
+        save_settings(DEFAULT_SETTINGS)
+        return dict(DEFAULT_SETTINGS)
+    try:
+        with open(SETTINGS_FILE) as f:
+            data = json.load(f)
+        return _deep_merge(DEFAULT_SETTINGS, data)
+    except Exception as e:
+        print(f"⚠ Gagal load settings.json: {e}")
+        return dict(DEFAULT_SETTINGS)
+
+def save_settings(s):
+    try:
+        with open(SETTINGS_FILE, "w") as f:
+            json.dump(s, f, indent=2)
+        return True
+    except Exception as e:
+        print(f"⚠ Gagal simpan settings.json: {e}")
+        return False
+
+def get_current_pin():
+    return load_settings().get("pin", config.PIN_CODE)
 
 app = Flask(__name__)
 app.secret_key = config.SECRET_KEY
 socketio = SocketIO(app, cors_allowed_origins="*")
+
+# Pastikan settings.json ada
+load_settings()
 
 state = {
     "running":          False,
@@ -30,12 +88,114 @@ state = {
 # ── PIN ───────────────────────────────────────────────────────
 @app.route("/api/verify-pin", methods=["POST"])
 def verify_pin():
-    data    = request.get_json()
-    purpose = data.get("purpose", "import")   # import | view_qr
-    if data.get("pin") == config.PIN_CODE:
+    data    = request.get_json() or {}
+    purpose = data.get("purpose", "import")   # import | view_qr | settings
+    if data.get("pin") == get_current_pin():
         session[f"pin_{purpose}"] = True
         return jsonify({"success": True})
     return jsonify({"success": False}), 401
+
+# ── Settings API ──────────────────────────────────────────────
+def _sanitize_for_client(s):
+    """Hilangkan field sensitif (PIN penuh, bot token) sebelum kirim ke client."""
+    out = json.loads(json.dumps(s))   # deep copy
+    out.pop("pin", None)
+    if isinstance(out.get("telegram"), dict):
+        bt = out["telegram"].get("bot_token", "")
+        out["telegram"]["bot_token_set"] = bool(bt)
+        # Jangan kirim token mentah ke client; cukup masked
+        if bt:
+            out["telegram"]["bot_token"] = bt[:4] + "…" + bt[-4:] if len(bt) > 10 else "●●●●"
+    return out
+
+@app.route("/api/settings", methods=["GET"])
+def get_settings():
+    if not session.get("pin_settings"):
+        return jsonify({"error": "PIN diperlukan"}), 401
+    return jsonify({"success": True, "settings": _sanitize_for_client(load_settings())})
+
+@app.route("/api/settings", methods=["POST"])
+def update_settings():
+    if not session.get("pin_settings"):
+        return jsonify({"error": "PIN diperlukan"}), 401
+    payload = request.get_json() or {}
+    current = load_settings()
+
+    # transfer_mode
+    mode = payload.get("transfer_mode")
+    if mode in ("cut", "copy"):
+        current["transfer_mode"] = mode
+
+    # telegram
+    tg = payload.get("telegram") or {}
+    if isinstance(tg, dict):
+        cur_tg = current.get("telegram", {})
+        if "enabled" in tg:   cur_tg["enabled"]   = bool(tg["enabled"])
+        # Hanya update token jika user mengirim nilai baru (bukan masked)
+        if "bot_token" in tg and tg["bot_token"] and "…" not in tg["bot_token"] and tg["bot_token"] != "●●●●":
+            cur_tg["bot_token"] = tg["bot_token"].strip()
+        if "chat_id" in tg:   cur_tg["chat_id"]   = str(tg["chat_id"]).strip()
+        current["telegram"] = cur_tg
+
+    # webhook
+    wh = payload.get("webhook") or {}
+    if isinstance(wh, dict):
+        cur_wh = current.get("webhook", {})
+        if "enabled" in wh: cur_wh["enabled"] = bool(wh["enabled"])
+        if "url"     in wh: cur_wh["url"]     = str(wh["url"]).strip()
+        if "method"  in wh:
+            m = str(wh["method"]).upper().strip()
+            cur_wh["method"] = m if m in ("GET","POST","PUT","PATCH") else "POST"
+        if "headers" in wh:
+            cur_wh["headers"] = wh["headers"] if isinstance(wh["headers"], dict) else {}
+        if "body" in wh:
+            cur_wh["body"] = wh["body"] if isinstance(wh["body"], dict) else {}
+        current["webhook"] = cur_wh
+
+    if save_settings(current):
+        # Sekali simpan, invalidasi session pin_settings
+        return jsonify({"success": True, "settings": _sanitize_for_client(current)})
+    return jsonify({"error": "Gagal menyimpan settings"}), 500
+
+@app.route("/api/settings/change-pin", methods=["POST"])
+def change_pin():
+    if not session.get("pin_settings"):
+        return jsonify({"error": "PIN diperlukan"}), 401
+    data = request.get_json() or {}
+    old_pin = str(data.get("old_pin", ""))
+    new_pin = str(data.get("new_pin", ""))
+    if old_pin != get_current_pin():
+        return jsonify({"error": "PIN lama salah"}), 400
+    if not (new_pin.isdigit() and len(new_pin) == 4):
+        return jsonify({"error": "PIN baru harus 4 digit angka"}), 400
+    s = load_settings()
+    s["pin"] = new_pin
+    if not save_settings(s):
+        return jsonify({"error": "Gagal menyimpan PIN"}), 500
+    log("🔐 PIN berhasil diganti")
+    return jsonify({"success": True})
+
+@app.route("/api/settings/test-notif", methods=["POST"])
+def test_notif():
+    if not session.get("pin_settings"):
+        return jsonify({"error": "PIN diperlukan"}), 401
+    data = request.get_json() or {}
+    channel = data.get("channel", "telegram")
+    sample = {
+        "folder":     "TEST_" + time.strftime("%Y-%m-%d_%H:%M:%S"),
+        "file_count": 0,
+        "gdrive_url": "https://drive.google.com/",
+        "time":       time.strftime("%Y-%m-%d %H:%M:%S"),
+        "event":      "test"
+    }
+    s = load_settings()
+    if channel == "telegram":
+        ok, msg = send_telegram(s.get("telegram", {}), sample, is_test=True)
+    elif channel == "webhook":
+        ok, msg = send_webhook(s.get("webhook", {}), sample, is_test=True)
+    else:
+        return jsonify({"error": "Channel tidak dikenal"}), 400
+    return jsonify({"success": ok, "message": msg})
 
 @app.route("/")
 def index():
@@ -283,15 +443,26 @@ def run_import_pipeline():
     )
     files_to_move = [l.strip() for l in find_list.stdout.splitlines() if l.strip()]
 
+    # Pilih mode transfer berdasarkan settings (cut / copy)
+    settings   = load_settings()
+    mode       = settings.get("transfer_mode", "cut")
+    log(f"🔀 Mode transfer: {mode.upper()}")
+
     cut_done = 0
     for fpath in files_to_move:
         fname = os.path.basename(fpath)
+        dest_path = os.path.join(dest_dir, fname)
         try:
-            os.rename(fpath, os.path.join(dest_dir, fname))
-        except Exception:
-            # Cross-device: fallback ke mv
-            subprocess.run(["mv", fpath, dest_dir + "/"],
-                           capture_output=True)
+            if mode == "copy":
+                shutil.copy2(fpath, dest_path)
+            else:
+                try:
+                    os.rename(fpath, dest_path)
+                except OSError:
+                    # Cross-device: fallback ke mv
+                    subprocess.run(["mv", fpath, dest_dir + "/"], capture_output=True)
+        except Exception as e:
+            log(f"⚠ Gagal transfer {fname}: {e}")
         cut_done += 1
         state["cut_done"]  = cut_done
         state["percent"]   = int(cut_done * 100 / cut_total) if cut_total else 0
@@ -307,8 +478,9 @@ def run_import_pipeline():
     file_count = len([f for f in os.listdir(dest_dir)
                       if os.path.isfile(os.path.join(dest_dir, f))])
     state["file_count"] = file_count
-    log(f"✅ {file_count} file berhasil dipindahkan")
-    socketio.emit("cut_done", {"count": file_count, "folder": folder_name})
+    verb = "disalin" if mode == "copy" else "dipindahkan"
+    log(f"✅ {file_count} file berhasil {verb}")
+    socketio.emit("cut_done", {"count": file_count, "folder": folder_name, "mode": mode})
     emit_state()
 
     # ── Phase 2: EJECT ────────────────────────────────────────
@@ -413,6 +585,14 @@ def run_import_pipeline():
         "count":  file_count
     })
     socketio.emit("play_sound", {"sound": "success"})
+
+    # ── Notifikasi (Telegram / Webhook) ───────────────────────────
+    threading.Thread(
+        target=notify_upload_done,
+        args=(folder_name, file_count),
+        daemon=True
+    ).start()
+
     # Refresh folder list setelah selesai
     time.sleep(1)
     socketio.emit("folder_list", {"folders": get_folder_list()})
@@ -487,12 +667,148 @@ def sync_only(folder_name):
     socketio.emit("sync_update", {"percent": 100, "speed": "", "eta": "Selesai",
                                   "transferred": state["transferred"],
                                   "total_size":  state["total_size"]})
+    src_count = len([f for f in os.listdir(src)
+                     if os.path.isfile(os.path.join(src, f))]) if os.path.exists(src) else 0
     socketio.emit("all_done", {"folder": folder_name,
-                               "time": state["last_sync"], "count": 0})
+                               "time": state["last_sync"], "count": src_count})
     socketio.emit("play_sound", {"sound": "success"})
+
+    # Notifikasi juga saat manual sync selesai
+    threading.Thread(
+        target=notify_upload_done,
+        args=(folder_name, src_count),
+        daemon=True
+    ).start()
     time.sleep(1)
     socketio.emit("folder_list", {"folders": get_folder_list()})
     emit_state()
+
+# ── Notifier: Telegram + Webhook ────────────────────────────────
+def _resolve_placeholders(obj, ctx):
+    """Ganti placeholder {folder}, {file_count}, {gdrive_url}, {time}, {event}
+    secara rekursif (untuk dict/list/str)."""
+    if isinstance(obj, str):
+        try:
+            return obj.format(**ctx)
+        except Exception:
+            return obj
+    if isinstance(obj, list):
+        return [_resolve_placeholders(x, ctx) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _resolve_placeholders(v, ctx) for k, v in obj.items()}
+    return obj
+
+def send_telegram(cfg, ctx, is_test=False):
+    if not cfg:
+        return False, "Konfigurasi kosong"
+    if not cfg.get("enabled") and not is_test:
+        return False, "Telegram tidak aktif"
+    token   = (cfg or {}).get("bot_token", "").strip()
+    chat_id = str((cfg or {}).get("chat_id", "")).strip()
+    if not token or not chat_id:
+        return False, "Token / Chat ID belum di-set"
+
+    folder     = ctx.get("folder", "-")
+    file_count = ctx.get("file_count", 0)
+    gdrive_url = ctx.get("gdrive_url", "") or "(belum tersedia)"
+    waktu      = ctx.get("time", "")
+    head       = "🧪 <b>TEST notifikasi MediaSync</b>" if is_test else "🎉 <b>Upload Google Drive selesai</b>"
+    text = (
+        f"{head}\n\n"
+        f"📁 Folder: <code>{folder}</code>\n"
+        f"🖼 Jumlah file: <b>{file_count}</b>\n"
+        f"🔗 Link: {gdrive_url}\n"
+        f"⏰ Waktu: {waktu}"
+    )
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = json.dumps({
+        "chat_id":    chat_id,
+        "text":       text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": False
+    }).encode("utf-8")
+    try:
+        req = urlrequest.Request(
+            url, data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+        with urlrequest.urlopen(req, timeout=15) as resp:
+            body = resp.read().decode("utf-8", errors="ignore")
+            if resp.status == 200:
+                return True, "Telegram terkirim"
+            return False, f"Telegram HTTP {resp.status}: {body[:200]}"
+    except urlerror.HTTPError as e:
+        body = e.read().decode("utf-8", errors="ignore") if hasattr(e, "read") else ""
+        return False, f"Telegram HTTP {e.code}: {body[:200]}"
+    except Exception as e:
+        return False, f"Telegram error: {e}"
+
+def send_webhook(cfg, ctx, is_test=False):
+    if not cfg or (not cfg.get("enabled") and not is_test):
+        return False, "Webhook tidak aktif"
+    url = (cfg or {}).get("url", "").strip()
+    if not url:
+        return False, "URL webhook belum di-set"
+    method  = (cfg.get("method") or "POST").upper()
+    headers = cfg.get("headers") or {}
+    body    = cfg.get("body") or {}
+
+    # Resolve placeholder pada url, headers, body
+    url     = _resolve_placeholders(url,     ctx)
+    headers = _resolve_placeholders(headers, ctx) if isinstance(headers, dict) else {}
+    body    = _resolve_placeholders(body,    ctx)
+
+    # Default body: kirim ctx penuh jika user tidak set body
+    if not body:
+        body = ctx
+
+    data = None
+    h    = {str(k): str(v) for k, v in headers.items()}
+    if method in ("POST", "PUT", "PATCH"):
+        data = json.dumps(body).encode("utf-8")
+        h.setdefault("Content-Type", "application/json")
+
+    try:
+        req = urlrequest.Request(url, data=data, headers=h, method=method)
+        with urlrequest.urlopen(req, timeout=15) as resp:
+            txt = resp.read().decode("utf-8", errors="ignore")
+            if 200 <= resp.status < 300:
+                return True, f"Webhook OK ({resp.status})"
+            return False, f"Webhook HTTP {resp.status}: {txt[:200]}"
+    except urlerror.HTTPError as e:
+        txt = e.read().decode("utf-8", errors="ignore") if hasattr(e, "read") else ""
+        return False, f"Webhook HTTP {e.code}: {txt[:200]}"
+    except Exception as e:
+        return False, f"Webhook error: {e}"
+
+def notify_upload_done(folder_name, file_count):
+    """Kirim notifikasi setelah upload Google Drive selesai. Ambil GDrive URL dulu."""
+    settings = load_settings()
+    gdrive_url = ""
+    try:
+        urls = load_gdrive_urls()
+        gdrive_url = urls.get(folder_name) or get_gdrive_url(folder_name) or ""
+    except Exception as e:
+        log(f"⚠ Gagal ambil GDrive URL untuk notif: {e}")
+
+    ctx = {
+        "folder":     folder_name,
+        "file_count": file_count,
+        "gdrive_url": gdrive_url,
+        "time":       time.strftime("%Y-%m-%d %H:%M:%S"),
+        "event":      "upload_done"
+    }
+
+    tg = settings.get("telegram", {})
+    if tg.get("enabled"):
+        ok, msg = send_telegram(tg, ctx)
+        log(("📩 Telegram: " if ok else "⚠ Telegram: ") + msg)
+
+    wh = settings.get("webhook", {})
+    if wh.get("enabled"):
+        ok, msg = send_webhook(wh, ctx)
+        log(("📡 Webhook: " if ok else "⚠ Webhook: ") + msg)
 
 def emit_state():
     socketio.emit("state_update", state)
