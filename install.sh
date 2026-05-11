@@ -37,11 +37,41 @@ fi
 # ── User ──────────────────────────────────────────────────────
 step "Buat user $KIOSK_USER"
 if ! id "$KIOSK_USER" &>/dev/null; then
-    useradd -r -s /bin/bash -m -d /home/$KIOSK_USER $KIOSK_USER
+    useradd -m -s /bin/bash -d /home/$KIOSK_USER $KIOSK_USER
     ok "User $KIOSK_USER dibuat"
 else
     ok "User $KIOSK_USER sudah ada"
 fi
+
+# Tambah ke group yang dibutuhkan
+usermod -aG disk,plugdev,dialout "$KIOSK_USER" 2>/dev/null || true
+ok "User $KIOSK_USER ditambah ke group: disk, plugdev, dialout"
+
+# Sudoers lengkap
+cat > /etc/sudoers.d/mediasync-all << SUDOEOF
+$KIOSK_USER ALL=(ALL) NOPASSWD: /bin/mount
+$KIOSK_USER ALL=(ALL) NOPASSWD: /bin/umount
+$KIOSK_USER ALL=(ALL) NOPASSWD: /usr/bin/umount
+$KIOSK_USER ALL=(ALL) NOPASSWD: /sbin/losetup
+$KIOSK_USER ALL=(ALL) NOPASSWD: /usr/sbin/losetup
+$KIOSK_USER ALL=(ALL) NOPASSWD: /bin/sync
+$KIOSK_USER ALL=(ALL) NOPASSWD: /usr/bin/sync
+$KIOSK_USER ALL=(ALL) NOPASSWD: /bin/chown
+$KIOSK_USER ALL=(ALL) NOPASSWD: /bin/chmod
+$KIOSK_USER ALL=(ALL) NOPASSWD: /usr/local/bin/sdcard-detect.sh
+SUDOEOF
+chmod 440 /etc/sudoers.d/mediasync-all
+visudo -c -f /etc/sudoers.d/mediasync-all > /dev/null \
+    && ok "Sudoers mediasync dikonfigurasi" \
+    || echo "ERROR: sudoers syntax error!"
+
+# Fix permission folder
+chown -R "$KIOSK_USER:$KIOSK_USER" "$INSTALL_DIR" "$MEDIA_DIR" 2>/dev/null || true
+chmod -R 755 "$INSTALL_DIR" "$MEDIA_DIR" 2>/dev/null || true
+touch "$LOG_FILE"
+chown "$KIOSK_USER:$KIOSK_USER" "$LOG_FILE"
+chmod 664 "$LOG_FILE"
+ok "Permission folder difix"
 
 # ── Copy files ────────────────────────────────────────────────
 step "Copy file ke $INSTALL_DIR"
